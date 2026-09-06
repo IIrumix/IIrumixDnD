@@ -114,7 +114,7 @@ CHA:
 - Max MP = INT * 10
 - Max SP = DEX * 10
 
-if HP:0 character stay Vegitable(coma) state till other player give them somthing that can +1 Max Hp stat 
+if HP:0 character stay Vegetable(coma) state till other player give them somthing that can +1 Max Hp stat 
 
 เมื่อสร้างตัวละครเสร็จ หรือมีการลดทอน/ฟื้นฟู ให้บันทึกสถานะลงคอลัมน์ใน Sheet1 ด้วยรูปแบบ "ปัจจุบัน/เต็ม" เสมอ โดยใส่ใน "value" เช่น:
 - column: "current_hp/max_hp", value: "100/100"
