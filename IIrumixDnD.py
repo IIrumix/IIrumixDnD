@@ -3,6 +3,7 @@ import importlib.util
 import os
 import re
 import sys
+import shutil
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -196,10 +197,22 @@ async def reset_game(interaction: discord.Interaction):
     chroma_client.delete_collection(name="campaign_logs")
     memory_collection = chroma_client.get_or_create_collection(name="campaign_logs")
     last_narrative = "เพิ่งเริ่มเกม ทุกคนเพิ่งมาถึงสถาบันเวทมนตร์"
+    os.remove("DnD memory")
     active_npcs = {}
+    resetExcel()
 
     await interaction.response.send_message("ล้างความจำในระบบและรีเซ็ตแคมเปญเรียบร้อยแล้ว")
-        
+
+###########
+
+def resetExcel():
+    try:
+        shutil.copy("session_tem.xlsx", SESSION_FILE_PATH)
+    except PermissionError:
+        print("[WARNING] รีเซ็ตไม่ได้ ไฟล์ถูกโปรแกรมอื่นใช้อยู่.")
+    except FileNotFoundError:
+        print("[ERROR] ไฟล์'session_tem.xlsx'หาย.")
+
 ##############################
 
 async def narratorResponse(file_path, rules, player_action):
@@ -275,7 +288,7 @@ async def narratorResponse(file_path, rules, player_action):
                 "status": "ยังอยู่ในฉาก / เดินจากไปแล้ว",
                 "description": "คำอธิบายสั้นๆ เช่น ยืนถือตำราเวทขวางประตูอยู่"
             }
-        ]
+        ],
             "fail_create_character": false,
             "bonus_turn_for_giving_skill" : null
         }
