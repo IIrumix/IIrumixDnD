@@ -42,6 +42,13 @@ DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 AI_KEY = os.getenv("AI_API_KEY")
 API_URL = os.getenv("API_URL")
 
+if not DISCORD_TOKEN:
+    print("Discord token is empty")
+if not AI_KEY:
+    print("AI API key is empty")
+if not API_URL:
+    print("AI URL is missing")
+
 ai_client = AsyncOpenAI(
     api_key=AI_KEY,
     base_url=API_URL
