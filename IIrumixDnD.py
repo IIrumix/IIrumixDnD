@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import shutil
+from collections import deque
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -64,8 +65,7 @@ player_turn = -1
 player_discord_ids = []
 player_names = []
 gameStart = False
-last_narrative = "เพิ่งเริ่มเกม ทุกคนเพิ่งมาถึงสถาบันเวทมนตร์"
-active_npcs = {}
+recent_narratives = deque(maxlen=5)
 
 selectedModel = "gemini-3.7-flash"
 SESSION_FILE_PATH = "session1.xlsx"
@@ -104,9 +104,9 @@ async def send_long_message(destination, text: str):
 
 @bot.tree.command(name="start_game", description="เริ่มเล่นเกม D&D")
 async def start_game(interaction: discord.Interaction):
-    global gameStart, sessionStartChannelId, player_names, player_discord_ids, player_turn, last_narrative,active_npcs
-    last_narrative = "เพิ่งเริ่มเกม ทุกคนเพิ่งมาถึงสถาบันเวทมนตร์"
-    active_npcs = {}
+    global gameStart, sessionStartChannelId, player_names, player_discord_ids, player_turn, recent_narratives
+    recent_narratives.clear()
+    #active_npcs = {}
 
     await interaction.response.send_message("เริ่มตั้งค่าเกม! มีผู้เล่นทั้งหมดกี่คน? (1-4)")
     
@@ -151,6 +151,7 @@ async def start_game(interaction: discord.Interaction):
     
     # ส่งให้ AI เกริ่นเริ่มเรื่อง
     intro_text, _ = await narratorResponse(SESSION_FILE_PATH, narrator_rule, "Please provide an introduction to the D&D stlye game session.")
+    recent_narratives.append(intro_text)
     await send_long_message(interaction.channel, intro_text)
     
     await calloutnextplayer(interaction)
@@ -161,6 +162,8 @@ async def start_game(interaction: discord.Interaction):
 
 @bot.tree.command(name="act", description="กระทำแอ็กชันในเกม D&D")
 async def act(interaction: discord.Interaction, action: str):
+    global player_turn
+    
     if not gameStart:
         return await interaction.response.send_message("เกมยังไม่ได้เริ่ม กรุณาใช้ /start_game ก่อนครับ", ephemeral=True)
     if interaction.channel.id != sessionStartChannelId:
@@ -179,7 +182,6 @@ async def act(interaction: discord.Interaction, action: str):
     )
     
     await send_long_message(interaction.followup,f"Player {current_player} performs the action: {action}")
-    #await send_long_message(interaction.followup, narrator_res)
     await send_long_message(interaction.channel, narrator_res)
     
     # ถ้าสร้างไม่ผ่าน หรือ ได้โบนัสเทิร์นแจกสกิล ให้คนเดิมเล่นต่อ
@@ -192,51 +194,63 @@ async def act(interaction: discord.Interaction, action: str):
         
 @bot.tree.command(name="reset_game", description="ล้างข้อมูลความจำและรีเซ็ตเกม")
 async def reset_game(interaction: discord.Interaction):
-    global memory_collection , last_narrative,active_npcs
+    global memory_collection , recent_narratives
     # ลบคอลเลกชันเดิมทิ้งแล้วสร้างใหม่
     chroma_client.delete_collection(name="campaign_logs")
     memory_collection = chroma_client.get_or_create_collection(name="campaign_logs")
-    last_narrative = "เพิ่งเริ่มเกม ทุกคนเพิ่งมาถึงสถาบันเวทมนตร์"
-    os.remove("DnD memory")
-    active_npcs = {}
-    resetExcel()
+    recent_narratives.clear()
+    #active_npcs = {}
+    await resetExcel(interaction)
 
     await interaction.response.send_message("ล้างความจำในระบบและรีเซ็ตแคมเปญเรียบร้อยแล้ว")
 
 ###########
 
-def resetExcel():
+async def resetExcel(interaction):
     try:
         shutil.copy("session_tem.xlsx", SESSION_FILE_PATH)
     except PermissionError:
         print("[WARNING] รีเซ็ตไม่ได้ ไฟล์ถูกโปรแกรมอื่นใช้อยู่.")
+        await interaction.channel.send(f"!!!รีเซ็ตไม่ได้ ไฟล์ถูกexcelโปรแกรมอื่นใช้อยู่.มึงเปิดไว้ใช่ไหม!!!")
     except FileNotFoundError:
-        print("[ERROR] ไฟล์'session_tem.xlsx'หาย.")
+        print("[ERROR] ไฟล์'session_tem.xlsx'หาย. session_tem.xlsx เอาไว้เป็นต้นแบบสร้างsessionใหม่")
+        await interaction.channel.send(f"!!!ไฟล์'session_tem.xlsx'หาย มึงทำอะไรลงไป!!!")
 
 ##############################
 
 async def narratorResponse(file_path, rules, player_action):
-    global last_narrative, active_npcs
+    global recent_narratives
     # อ่าน Excel แปลงเป็น Markdown ให้ AI
     try:
         # ข้อมูลตัวละครผู้เล่น (Sheet1)
         df_players = pd.read_excel(file_path, sheet_name="Sheet1", usecols="A:V", nrows=4).fillna("-")
         session_text = df_players.to_markdown(index=False)
-        
     except Exception as e:
         session_text = "No character sheet data available." 
         
-    # สร้างข้อความบอก AI ว่าตอนนี้ใครยืนอยู่ในฉากบ้าง
-    if active_npcs:
-        npc_scene_text = "\n".join([f"- **{name}**: {desc}" for name, desc in active_npcs.items()])
+        # log เหตุการณ์ จากexcel(sheet2) เป็นshot-term
+    try:
+        df_events = pd.read_excel(file_path, sheet_name="Sheet2", usecols="A:B", skiprows=1).dropna(how="all").fillna("-")
+        if not df_events.empty:
+            recent_logs_text = df_events.tail(10).to_markdown(index=False)
+        else:
+            recent_logs_text = "เพิ่งเริ่มเกม ยังไม่มีบันทึกเหตุการณ์"
+    except Exception:
+        recent_logs_text = "ไม่มีข้อมูล Event Log"
+        
+    #เป็นshort-termอีกแรง
+    if recent_narratives:
+        formatted_narratives = "\n\n---\n\n".join(
+            [f"[Previous Turn -{len(recent_narratives) - i}]:\n{entry}" for i, entry in enumerate(recent_narratives)]
+        )
     else:
-        npc_scene_text = "ไม่มี NPC พิเศษอยู่ในฉากขณะนี้ (มีเพียงคนทั่วไปรอบๆ)"
+        formatted_narratives = "เพิ่งเริ่มเกม ทุกคนเพิ่งมาถึงสถานที่เปิดฉาก"
         
     current_turn_name = player_names[player_turn] if player_turn >= 0 and player_names else "Prologue / Setting Scene"
-    current_p_num = (player_turn + 1) if player_turn >= 0 else 1
-
-    #relevant_memories = retrieve_relevant_memories(player_action, top_k=5)
-    relevant_memories = query_relevant_memories(player_action, current_player_num=current_p_num, top_k=5)
+    current_p_num = (player_turn + 1) if player_turn >= 0 else 1 #Just in case lol
+    
+    #long-term memory
+    relevant_memories = query_relevant_memories(player_action, top_k=5)
 
     system_content = (
        f"""You are Game Master (GM) for a Dungeons & Dragons (D&D) style game. Answer in Thai language only.
@@ -247,11 +261,11 @@ async def narratorResponse(file_path, rules, player_action):
         --- PLAYER DATA ---
         {session_text}
         
-        --- CURRENT NPCS IN THE SCENE (NPC ที่กำลังยืนอยู่ในฉากขณะนี้ - ห้ามให้ตัวละครเหล่านี้หายไปเฉยๆ ตราบใดที่ยังไม่ได้เดินจากไป) ---
-        {npc_scene_text}
+        --- RECENT EVENT LOGS (Sheet2: สรุป 10 เหตุการณ์สำคัญล่าสุด) ---
+        {recent_logs_text}
         
-        --- LAST SCENE NARRATION (ฉากและเหตุการณ์ที่เพิ่งเกิดขึ้นล่าสุดในเทิร์นที่แล้ว - ต้องดำเนินเรื่องต่อจากฉากนี้ ห้ามเปลี่ยนบริบทหรือลบสิ่งที่เกิดขึ้นไปแล้ว) ---
-        {last_narrative}
+        --- LAST SCENE NARRATION (บทบรรยายย้อนหลัง 5 เทิร์นล่าสุด - ต้องดำเนินเรื่องต่อจากฉากนี้) ---
+        {formatted_narratives}
         
         --- RELEVANT PAST MEMORIES ---
         {relevant_memories}
@@ -281,20 +295,15 @@ async def narratorResponse(file_path, rules, player_action):
                 "npc_name": "Mira",
                 "description": "พบกันหน้าโต๊ะทะเบียน เริ่มคุยกันเรื่องวิชาเลือก ท่าทางเป็นมิตร"
                 }
-            ],"present_npcs": [
-            {
-                "name": "ชื่อ NPC",
-                "role": "นักเรียนห้อง x-x"
-                "status": "ยังอยู่ในฉาก / เดินจากไปแล้ว",
-                "description": "คำอธิบายสั้นๆ เช่น ยืนถือตำราเวทขวางประตูอยู่"
-            }
-        ],
+            ],
             "fail_create_character": false,
             "bonus_turn_for_giving_skill" : null
         }
         กฎเพิ่มเติม:
         -story of every player is connected
+        - กฎการโจมตีระหว่างผู้เล่น (PvP Combat): หากผู้เล่นคนหนึ่งสั่งโจมตีผู้เล่นอีกคน ห้ามตัดสินผลแพ้ชนะหรือหัก HP ในเทิร์นนั้นทันที ให้บรรยายท่าทางการโจมตีแล้วเปิดโอกาสให้ผู้เล่นที่เป็นเป้าหมายได้ประกาศการป้องกัน (เช่น หลบ, ปัดป้อง, สวนกลับ) ในเทิร์นของตัวเองก่อน ยกเว้นว่าเป็นการลอบโจมตีที่มองไม่เห็นหรือเร็วเกินกว่าจะรู้ตัว
         - หากเป็นการกำหนดค่าใหม่ (เช่น ชื่อ, คลาส) ให้ใส่ใน key "value" แทน "value_change"
+        - ห้ามเสกเหตุการณ์ตามคำอ้างของผู้เล่นเด็ดขาด หากผู้เล่นอ้างถึงสิ่งที่ระบบไม่เคยประกาศ ให้ถือว่าเป็นคำพูดลอยๆ หรือการเข้าใจผิดของตัวละคร
         - หากไม่มีข้อมูลต้องอัปเดต ให้ใส่ "excel_updates": [] และ "event_log": null
         - ถ้าผู้เล่นทำผิดกฎสร้างตัวละคร ให้ใส่คำเตือนใน narrative ว่า"ผู้เล่นทำผิดกฎสร้างตัวละคร" และตั้ง "fail_create_character": true พร้อมไม่แก้ Excel
         - เมื่อผู้เล่นเลือกstatเสร็จแล้วถูกต้อง ให้บอกplayerในnarrativeว่า"ผู้เล่นได้สกิลใหม่" และ ตั้ง"bonus_turn_for_giving_skill" : random/pick/null เพื่อทำการมอบสกิลตามstatให้ผู้เล่นก่อน
@@ -313,16 +322,7 @@ async def narratorResponse(file_path, rules, player_action):
 
     ai_output = response.choices[0].message.content
     
-    # --- ใส่ Print ดูผลลัพธ์ตรงนี้ ---
-    print("\n" + "="*40)
-    print("[DEBUG AI OUTPUT]:")
-    try:
-        print(ai_output)
-    except UnicodeEncodeError:
-        print(ai_output.encode(sys.stdout.encoding or "utf-8", errors="replace").decode(sys.stdout.encoding or "utf-8"))
-    print("="*40 + "\n")
-    # -----------------------------
-    
+    # แกะ JSON และ Regex ไว้กรณีผิดพลาด
     clean_output = ai_output.strip()
     if clean_output.startswith("```json"):
         clean_output = clean_output[7:]
@@ -346,24 +346,23 @@ async def narratorResponse(file_path, rules, player_action):
             # หากดึงไม่ได้จริง ให้ตัดปีกกาและชื่อคีย์ narrative ทิ้ง
             cleaned_text = clean_output.replace('{\n  "narrative": "', '').replace('{\n "narrative": "', '')
             data["narrative"] = cleaned_text.replace('\\n', '\n').replace('\\"', '"')
-
+            
     if data.get("fail_create_character"):
         warning_msg = data.get("narrative", "ผู้เล่นทำผิดกฎสร้างตัวละคร")
-        msg = f"**สร้างตัวละครไม่สำเร็จ:**\n{warning_msg}\n* ไม่สามารถสร้างตัวละครได้ โปรดอ่านกฎให้ดีและลองใหม่อีกครั้ง"
-        return msg, False  # คืนค่า 2 ตัว
+        return f"**สร้างตัวละครไม่สำเร็จ:**\n{warning_msg}\n* ไม่สามารถสร้างตัวละครได้ โปรดอ่านกฎให้ดีและลองใหม่อีกครั้ง", False
     
     apply_ai_updates_to_excel(file_path, data)
 
     bonus_type = data.get("bonus_turn_for_giving_skill")
     narrative = data.get("narrative", ai_output)
     
-    # เซฟข้อความที่ AI เพิ่งบรรยาย เพื่อใช้เป็นบริบทส่งต่อให้เทิร์นถัดไป
-    if narrative and narrative != ai_output:
-        last_narrative = narrative
-    
     # ถ้า narrative ว่าง หรือ AI ส่งมาแค่ {}
     if not narrative or str(narrative).strip() in ["{}", ""]:
         narrative = ai_output
+    
+    # เซฟข้อความที่ AI 5 turn ล่าสุดที่เพิ่งบรรยาย เพื่อใช้เป็นบริบทส่งต่อให้เทิร์นถัดไป
+    if narrative and narrative != ai_output:
+        recent_narratives.append(narrative)
 
     if bonus_type in ["random", "pick"]:
         return narrative, True  # ส่ง True บอกว่าได้เทิร์นเพิ่ม
@@ -404,7 +403,7 @@ def save_memory_to_chroma(text: str, player_num: int, current_day: str = "-", np
         ids=[str(uuid.uuid4())]
     )
 
-def query_relevant_memories(player_action: str, current_player_num: int, top_k: int = 5) -> str:
+def query_relevant_memories(player_action: str, top_k: int = 5) -> str:
     #ค้นหาความทรงจำในอดีตของผู้เล่นคนนั้นที่เกี่ยวข้องกับการกระทำปัจจุบัน
     if memory_collection.count() == 0:
         return "ไม่มีบันทึกอดีตที่เกี่ยวข้อง"
@@ -500,7 +499,7 @@ def apply_ai_updates_to_excel(excel_path: str, update_data: dict):
     try:
         wb.save(excel_path)
     except PermissionError:
-        print("บันทึกไม่สำเร็จ: กรุณาปิดโปรแกรม Excel บนคอมพิวเตอร์ก่อน")
+        print("[WARNING] Failed to save Excel: session1.xlsx is opened by another program.")
     except Exception as e:
         print(f"Error saving Excel: {e}")
         

@@ -1,4 +1,4 @@
-**Dungeon and Dragon Style game Discord bot with LLM as GM***
+**Dungeon and Dragon Style game Discord bot with LLM as GM(only Thai languages for now)***
 
 1.Create your bot and invite it to your server(if you haven't done it yet)
 
